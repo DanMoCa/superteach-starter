@@ -1,113 +1,316 @@
-import Image from 'next/image'
+'use client';
+
+import { toast, Toaster } from "react-hot-toast";
+import {
+  Connection,
+  SystemProgress,
+  Transaction,
+  PublicKey,
+  LAMPORTS_PER_SOL,
+  SendTransactionError,
+  clusterApiUrl,
+  SystemProgram,
+} from "@solana/web3.js"
+import { useState, useEffect } from "react";
+
+import { useStorageUpload } from "@thirdweb-dev/react";
+
+const SOLANA_NETWORK = "devnet";
 
 export default function Home() {
+  const [publicKey, setPublicKey] = useState(null);
+  const [balance, setBalance] = useState(0);
+  const [destinationWallet, setDestinationWallet] = useState("");
+  const [amount, setAmount] = useState(0);
+  const [explorerLink, setExplorerLink] = useState("");
+  const [uploadUrl, setUploadUrl] = useState(null);
+  const [url, setUrl] = useState(null);
+  const [statusText, setStatusText] = useState("");
+
+  useEffect(() => {
+    let key = window.localStorage.getItem("publicKey");
+
+    // if key is null dont do anything
+    if(!key) return;
+    setPublicKey(key);
+    getBalance(key);
+    if(explorerLink) setExplorerLink(null);
+  }, []);
+
+  const signIn = async () => {
+    const provider = window?.phantom?.solana;
+    const {solana} = window;
+
+    if(!provider?.isPhantom || !solana.isPhantom) {
+      toast.error("Phantom no esta instalado");
+      setTimeout(() => {
+        window.open("https://phantom.app/", "_blank");
+      }, 2000);
+      return;
+    }   
+
+    let phantom;
+    if(provider?.isPhantom) phantom = provider;
+
+    const {publicKey} = await phantom.connect();
+    // console.log("publicKey", publicKey.toString());
+    setPublicKey(publicKey);
+    window.localStorage.setItem("publicKey", publicKey.toString() );
+
+    getBalance(publicKey.toString());
+
+    toast.success("Conectado a Phantom");
+  }
+
+  const signOut = async () => {
+    const provider = window?.phantom?.solana;
+    const {solana} = window;
+    
+    if(!provider?.isPhantom || !solana.isPhantom) {
+      toast.error("Phantom no esta instalado");
+      setTimeout(() => {
+        window.open("https://phantom.app/", "_blank");
+      }, 2000);
+      return;
+    }
+
+    let phantom;
+    if(provider?.isPhantom) phantom = provider;
+
+    await phantom.disconnect();
+    setPublicKey(null);
+    window.localStorage.removeItem("publicKey");
+
+    toast.success("Desconectado de Phantom");
+  }
+
+  const getBalance = async(publicKey) => {
+    try{ 
+    const connection = new Connection(
+      clusterApiUrl(SOLANA_NETWORK),
+      "confirmed"
+    );
+
+    const balance = await connection.getBalance(
+      new PublicKey(publicKey)
+    );
+    
+    setBalance(balance / LAMPORTS_PER_SOL);
+    // console.log(balance/LAMPORTS_PER_SOL);
+    }catch(error){
+    console.error("ERROR GET BALANCE", error);
+    toast.error("Something went wrong getting the balance");
+    }
+  }
+
+  const handleDestinationWalletChange = (e) => {
+    setDestinationWallet(e.target.value);
+  }
+
+  const handleAmountChange = (e) => {
+    setAmount(e.target.value);
+  }
+
+  const handleSubmit = async () => {
+    sendTransaction();
+  }
+
+  const sendTransaction = async() => {
+    try{
+      getBalance(publicKey.toString());
+      
+      if(balance < amount){
+        toast.error("No tienes suficiente SOL para enviar");
+        return;
+      }
+
+      const provider = window?.phantom?.solana;
+      const connection = new Connection(
+        clusterApiUrl(SOLANA_NETWORK),
+        "confirmed"
+      );
+
+      const fromPubKey = new PublicKey(publicKey.toString());
+      const toPubKey = new PublicKey(destinationWallet.toString());
+
+      const transaction = new Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: fromPubKey,
+          toPubkey: toPubKey,
+          lamports: amount * LAMPORTS_PER_SOL,
+        })
+      );
+
+      const {blockhash} = await connection.getLatestBlockhash();
+      transaction.recentBlockhash = blockhash;
+      transaction.feePayer = fromPubKey;
+
+      const signed = await provider.signTransaction(transaction);
+
+      const signature = await connection.sendRawTransaction(signed.serialize());
+
+      const confirmation = await connection.confirmTransaction(signature,{
+        commitment: "singleGossip",
+      });
+
+      const slot = confirmation.value?.slot;
+      
+      const solanaExplorerLink = `https://explorer.solana.com/tx/${signature}?cluster=${SOLANA_NETWORK}`;
+      setExplorerLink(solanaExplorerLink);
+      toast.success(`Transacción enviada con éxito en el bloque ${slot}`)
+
+      getBalance(publicKey.toString())
+      setAmount(0)
+      setDestinationWallet("")
+    }catch(error){
+      console.error("ERROR SEND TRANSACTION", error);
+      toast.error("Something went wrong sending the transaction");
+    }
+  }
+
+  const handleUrlChange = (e) => {
+    setUrl(e.target.value);
+  }
+
+  const {mutateAsync: upload} = useStorageUpload();
+
+  const uploadToIPFS = async (file) => {
+    try{
+      setStatusText("Subiendo a IPFS...");
+      const uploadUrl = await upload({
+        data: [file],
+        options: {
+          uploadWithGatewayUrl: true,
+          uploadWithoutDirectory: true,
+        },
+      });
+      return uploadUrl[0];
+    }catch(error){
+      console.error("ERROR UPLOAD TO IPFS", error);
+      toast.error("Something went wrong uploading to IPFS");
+    }
+  }
+
+  const urlToBlob = async (file) => {
+    try{
+      await fetch(url)
+      .then((res) => res.blob())
+      .then((myBlob) => {
+        myBlob.name = "blob.png";
+
+        file = new File([myBlob], "image.png", {
+            type: myBlob.type,
+        });
+      });
+
+      const uploadUrl = await uploadToIPFS(file);
+      console.log("uploadUrl", uploadUrl);
+
+      setStatusText(`La url de tu archivo es: ${uploadUrl} `);
+      setUploadUrl(uploadUrl);
+
+      return uploadUrl;
+    }catch(error){
+      console.error("ERROR URL TO BLOB", error);
+      toast.error("Something went wrong converting the url to blob");
+    }
+  }
+
   return (
-    <main className="flex min-h-screen flex-col items-center justify-between p-24">
-      <div className="z-10 w-full max-w-5xl items-center justify-between font-mono text-sm lg:flex">
-        <p className="fixed left-0 top-0 flex w-full justify-center border-b border-gray-300 bg-gradient-to-b from-zinc-200 pb-6 pt-8 backdrop-blur-2xl dark:border-neutral-800 dark:bg-zinc-800/30 dark:from-inherit lg:static lg:w-auto  lg:rounded-xl lg:border lg:bg-gray-200 lg:p-4 lg:dark:bg-zinc-800/30">
-          Get started by editing&nbsp;
-          <code className="font-mono font-bold">app/page.js</code>
-        </p>
-        <div className="fixed bottom-0 left-0 flex h-48 w-full items-end justify-center bg-gradient-to-t from-white via-white dark:from-black dark:via-black lg:static lg:h-auto lg:w-auto lg:bg-none">
-          <a
-            className="pointer-events-none flex place-items-center gap-2 p-8 lg:pointer-events-auto lg:p-0"
-            href="https://vercel.com?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <div className="flex flex-col w-screen h-screen bg-black">
+      <div className="flex flex-col py-24 place-items-center justify-center">
+        <h1 className="text-5xl font-bold pb-10 text-emerald-300">
+          Superteach Starter        
+        </h1>
+
+        { publicKey ? (
+          <div className="flex flex-col place-items-center justify-center space-y-10">
+            <h2 className="text-2xl font-bold text-white">
+              Tu dirección de wallet es {publicKey.toString()}
+            </h2>
+
+            <h3 className="text-xl font-bold text-white">
+              Tu balance es de {balance} SOL
+            </h3>
+
+            <div className="grid grid-cols-1 gap-4 place-items-center">
+              <input
+                type="text"
+                className="p-2 text-black rounded-2xl"
+                placeholder="Ingresa la dirección de la wallet de destino"
+                onChange={handleDestinationWalletChange}
+              />
+
+              <h4 className="text-lg font-bold text-white">
+                Cantidad de SOL a enviar:
+              </h4>
+
+              <input
+                type="number"
+                className="p-2 text-black rounded-2xl"
+                placeholder="Ingresa la cantidad de SOL a enviar"
+                onChange={handleAmountChange}
+              />
+
+              <button
+                type="submit"
+                className="transition ease-in-out hover:-translate-y-1 hover:scale-110 duration-300 delay-150 inline-flex h-8 w-52 justify-center bg-green-500 font-bold text-white rounded-2xl items-center"
+                onClick={handleSubmit}
+                >
+                  Enviar ⚡
+                </button>
+              
+              {explorerLink && (
+                <a href={explorerLink} target="_blank">
+                  <span>
+                    Ver transacción en Solana Explorer 🚀
+                  </span> 
+                </a>
+              )}
+
+              <input 
+                className="p-2 text-black rounded-2xl"
+                type="text" 
+                onChange={handleUrlChange}
+              />
+
+              <button
+                className="transition ease-in-out hover:-translate-y-1 hover:scale-110 duration-300 delay-150 inline-flex h-8 w-52 justify-center bg-orange-500 font-bold text-black rounded-2xl items-center"
+                onClick={() => urlToBlob()}
+              >
+                {""} Subir a IPFS 🌌
+              </button>
+
+              <h3 className="text-md font-bold">
+                {statusText}
+              </h3>
+            </div>
+
+            <div className="flex flex-col place-items-center justify-center">
+              <button
+                type="submit"
+                className="transition ease-in-out hover:-translate-y-1 hover:scale-110 duration-300 delay-150 inline-flex h-8 w-52 justify-center bg-purple-500 font-bold text-white rounded-2xl items-center"
+                onClick={signOut}
+              >
+                  Desconectar Wallet 🛑
+                </button>
+            </div>
+          </div>
+        ) : (
+        <div className="flex flex-col place-items-center justify-center">
+          <button
+            type="submit"
+            className="transition ease-in-out hover:-translate-y-1 hover:scale-110 duration-300 delay-150 inline-flex h-8 w-52 justify-center bg-purple-500 font-bold text-white rounded-2xl items-center"
+            onClick={signIn}
           >
-            By{' '}
-            <Image
-              src="/vercel.svg"
-              alt="Vercel Logo"
-              className="dark:invert"
-              width={100}
-              height={24}
-              priority
-            />
-          </a>
+              Conecta tu Wallet 👻
+            </button>
         </div>
+        )}
+
+        <Toaster position="bottom-center" />
+
       </div>
-
-      <div className="relative flex place-items-center before:absolute before:h-[300px] before:w-[480px] before:-translate-x-1/2 before:rounded-full before:bg-gradient-radial before:from-white before:to-transparent before:blur-2xl before:content-[''] after:absolute after:-z-20 after:h-[180px] after:w-[240px] after:translate-x-1/3 after:bg-gradient-conic after:from-sky-200 after:via-blue-200 after:blur-2xl after:content-[''] before:dark:bg-gradient-to-br before:dark:from-transparent before:dark:to-blue-700 before:dark:opacity-10 after:dark:from-sky-900 after:dark:via-[#0141ff] after:dark:opacity-40 before:lg:h-[360px]">
-        <Image
-          className="relative dark:drop-shadow-[0_0_0.3rem_#ffffff70] dark:invert"
-          src="/next.svg"
-          alt="Next.js Logo"
-          width={180}
-          height={37}
-          priority
-        />
-      </div>
-
-      <div className="mb-32 grid text-center lg:mb-0 lg:grid-cols-4 lg:text-left">
-        <a
-          href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Docs{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Find in-depth information about Next.js features and API.
-          </p>
-        </a>
-
-        <a
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800 hover:dark:bg-opacity-30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Learn{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Learn about Next.js in an interactive course with&nbsp;quizzes!
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Templates{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Explore the Next.js 13 playground.
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Deploy{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Instantly deploy your Next.js site to a shareable URL with Vercel.
-          </p>
-        </a>
-      </div>
-    </main>
+    </div>
   )
 }
